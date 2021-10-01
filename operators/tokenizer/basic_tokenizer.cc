@@ -53,7 +53,9 @@ std::vector<ustring> BasicTokenizer::Tokenize(ustring text) {
       continue;
     }
 
-    if (tokenize_punctuation_ && ::iswpunct(c)) {
+    // 0x2019 unicode is not punctuation in some Linux platform, 
+    // to be consistent, take it as punctatuation always.
+    if (tokenize_punctuation_ && (::iswpunct(c) || c == wint_t(0x2019))) {
       push_current_token_and_clear();
       push_single_char_and_clear(c);
       continue;
@@ -83,7 +85,7 @@ KernelBasicTokenizer::KernelBasicTokenizer(OrtApi api, const OrtKernelInfo* info
   bool tokenize_chinese_chars = TryToGetAttributeWithDefault("tokenize_chinese_chars", true);
   bool strip_accents = TryToGetAttributeWithDefault("strip_accents", false);
   bool tokenize_punctuation = TryToGetAttributeWithDefault("tokenize_punctuation", false);
-  bool remove_control_chars = TryToGetAttributeWithDefault("strip_accents", true);
+  bool remove_control_chars = TryToGetAttributeWithDefault("remove_control_chars", true);
 
   tokenizer_ = std::make_shared<BasicTokenizer>(do_lower_case, tokenize_chinese_chars, strip_accents, tokenize_punctuation, remove_control_chars);
 }

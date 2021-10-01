@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
-
-###########################################################################
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License. See License.txt in the project root for
 # license information.
 ###########################################################################
 
+from setuptools import setup, find_packages
+from setuptools.dist import Distribution
 from setuptools.command.build_ext import build_ext as _build_ext
 from setuptools.command.develop import develop as _develop
 from setuptools.command.build_py import build_py as _build_py
-from contextlib import contextmanager
-from setuptools import setup, find_packages
 
 import os
 import sys
@@ -18,24 +16,11 @@ import setuptools
 import pathlib
 import subprocess
 
+from textwrap import dedent
 
-TOP_DIR = os.path.dirname(__file__)
+
+TOP_DIR = os.path.dirname(__file__) or os.getcwd()
 PACKAGE_NAME = 'onnxruntime_extensions'
-
-
-if '--nightly_build' in sys.argv:
-    PACKAGE_NAME = 'ortext_nightly'
-    sys.argv.remove('--nightly_build')
-
-
-@contextmanager
-def chdir(path):
-    orig_path = os.getcwd()
-    os.chdir(str(path))
-    try:
-        yield
-    finally:
-        os.chdir(orig_path)
 
 
 def load_msvcvar():
@@ -53,6 +38,26 @@ def load_msvcvar():
             raise SystemExit(
                 "Cannot find cmake in the executable path, " +
                 "please install one or specify the environement variable VCVARS to the path of VS vcvars64.bat.")
+
+
+def read_git_refs():
+    release_branch = False
+    stdout, _ = subprocess.Popen(
+            ['git'] + ['log', '-1', '--format=%H'],
+            cwd=TOP_DIR,
+            stdout=subprocess.PIPE, universal_newlines=True).communicate()
+    HEAD = dedent(stdout.splitlines()[0]).strip('\n\r')
+    stdout, _ = subprocess.Popen(
+            ['git'] + ['show-ref', '--head'],
+            cwd=TOP_DIR,
+            stdout=subprocess.PIPE, universal_newlines=True).communicate()
+    for _ln in stdout.splitlines():
+        _ln = dedent(_ln).strip('\n\r')
+        if _ln.startswith(HEAD):
+            _, _2 = _ln.split(' ')
+            if (_2.startswith('refs/remotes/origin/rel-')):
+                release_branch = True
+    return release_branch, HEAD
 
 
 class BuildCMakeExt(_build_ext):
@@ -79,7 +84,7 @@ class BuildCMakeExt(_build_ext):
             '-DOCOS_EXTENTION_NAME=' + pathlib.Path(self.get_ext_filename(extension.name)).name,
             '-DCMAKE_BUILD_TYPE=' + config
         ]
-        # Uses to overwrite 
+        # overwrite the Python module info if the auto-detection doesn't work.
         # export Python3_INCLUDE_DIRS=/opt/python/cp38-cp38
         # export Python3_LIBRARIES=/opt/python/cp38-cp38
         for env in ['Python3_INCLUDE_DIRS', 'Python3_LIBRARIES']:
@@ -94,37 +99,56 @@ class BuildCMakeExt(_build_ext):
             '--parallel'
         ]
 
-        with chdir(build_temp):
-            self.spawn(['cmake', str(project_dir)] + cmake_args)
-            if not self.dry_run:
-                self.spawn(['cmake', '--build', '.'] + build_args)
+        self.spawn(['cmake', '-S', str(project_dir), '-B', str(build_temp)] + cmake_args)
+        if not self.dry_run:
+            self.spawn(['cmake', '--build', str(build_temp)] + build_args)
 
         if sys.platform == "win32":
             self.copy_file(build_temp / config / 'ortcustomops.dll',
                            self.get_ext_filename(extension.name))
 
 
+class BuildPy(_build_py):
+    def run(self):
+        self.run_command("build_ext")
+        return super().run()
+
+
+class BuildDevelop(_develop):
+    def run(self):
+        self.run_command("build_ext")
+        return super().run()
+
+
+class BinaryDistribution(Distribution):
+    def has_ext_modules(self):
+        return True
+
+
 def read_requirements():
     with open(os.path.join(TOP_DIR, "requirements.txt"), "r") as f:
-        requirements = [_ for _ in [_.strip("\r\n ")
-                                    for _ in f.readlines()] if _ is not None]
+        requirements = [_ for _ in [dedent(_) for _ in f.readlines()] if _ is not None]
     return requirements
 
 
 # read version from the package file.
 def read_version():
     version_str = '1.0.0'
-    with (open(os.path.join(TOP_DIR, 'onnxruntime_extensions/__init__.py'), "r")) as f:
-        line = [_ for _ in [_.strip("\r\n ")
-                            for _ in f.readlines()] if _.startswith("__version__")]
+    with (open(os.path.join(TOP_DIR, 'onnxruntime_extensions/_version.py'), "r")) as f:
+        line = [_ for _ in [dedent(_) for _ in f.readlines()] if _.startswith("__version__")]
         if len(line) > 0:
-            version_str = line[0].split('=')[1].strip('" ')
+            version_str = line[0].split('=')[1].strip('" \n\r')
+
+    # is it a dev build or release?
+    if os.path.isdir(os.path.join(TOP_DIR, '.git')):
+        rel_br, cid = read_git_refs()
+        if not rel_br:
+            version_str += '+' + cid[:7]
     return version_str
 
 
 if sys.platform == "win32":
     load_msvcvar()
-
 
 ext_modules = [
     setuptools.extension.Extension(
@@ -135,7 +159,7 @@ ext_modules = [
 packages = find_packages()
 package_dir = {k: os.path.join('.', k.replace(".", "/")) for k in packages}
 package_data = {
-    "onnxruntime_extensions": ["*.dll", "*.so", "*.pyd"],
+    "onnxruntime_extensions": ["*.so", "*.pyd"],
 }
 
 long_description = ''
@@ -162,8 +186,11 @@ setup(
     ext_modules=ext_modules,
     cmdclass=dict(
         build_ext=BuildCMakeExt,
+        build_py=BuildPy,
+        develop=BuildDevelop
         ),
     include_package_data=True,
+    distclass=BinaryDistribution,
     install_requires=read_requirements(),
     classifiers=[
         'Development Status :: 4 - Beta',
